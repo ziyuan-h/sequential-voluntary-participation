@@ -46,7 +46,7 @@ class LinearQuadraticGame:
         N = self.g.shape[0]
         x_social = self.compute_social_optimum()
         u_social = self.compute_utility(x_social)
-        u_ic = []
+        u_ic = [None for _ in range(N)]
         ordering = ordering if ordering is not None else list(range(N))
         for i, agent in enumerate(ordering):
             if mechanism == "pivotal":
@@ -56,16 +56,26 @@ class LinearQuadraticGame:
             else:
                 raise ValueError("Unknown mechanism.")
 
-            u_ic.append(self.compute_utility(x_ic)[i])
+            assert u_ic[agent] is None
+            u_ic[agent] = self.compute_utility(x_ic)[agent]
 
         u_ic = np.asarray(u_ic)
         return u_social - u_ic
 
     def find_optimal_ranking_exhaustive(self) -> Tuple[float, Sequence]:
         max_tax, max_tax_perm = -np.inf, None
+        positive_perms, negative_perms = [], []
         for perm in itertools.permutations(range(self.num_agents)):
             total_tax = self.equilibrium_tax(mechanism="sequential", ordering=perm).sum()
             if total_tax > max_tax:
                 max_tax, max_tax_perm = total_tax, perm
+            if total_tax < 0:
+                negative_perms.append(perm)
+            else:
+                positive_perms.append(perm)
 
+        print("# Positive perms find:", len(positive_perms),
+              positive_perms[0] if len(positive_perms) > 0 else None)
+        print("# Negative perms find:", len(negative_perms),
+              negative_perms[-1] if len(negative_perms) > 0 else None)
         return max_tax, max_tax_perm

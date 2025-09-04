@@ -5,8 +5,8 @@ import networkx as nx
 def generate_random_symmetric_binary_matrix(N: int, edge_pr: float = 0.5) -> np.ndarray:
   """Generates a random symmetric matrix of size N with values 0 or 1."""
   random_matrix = np.random.rand(N, N)
-  binary_matrix = (random_matrix > edge_pr).astype(int)
-  symmetric_binary_matrix = (binary_matrix + binary_matrix.T > 0).astype(int)
+  binary_matrix = np.tril(random_matrix < edge_pr).astype(int)
+  symmetric_binary_matrix = binary_matrix + binary_matrix.T
   np.fill_diagonal(symmetric_binary_matrix, 0)
   return symmetric_binary_matrix
 
