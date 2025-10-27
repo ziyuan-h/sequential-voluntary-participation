@@ -39,6 +39,27 @@ def get_random_ordering(game: LinearQuadraticGame) -> Dict[str, np.ndarray]:
     return {"test_ordering": np.asarray(ordering)}
 
 
+def get_most_independent_ordering(game: LinearQuadraticGame) -> Dict[str, np.ndarray]:
+    ordering = []
+    order_values = []
+    while len(ordering) < game.num_agents:
+        outliers = set(range(game.num_agents)) - set(ordering)
+        x_ic = game.compute_incentive_compatible_profile(list(outliers))
+        u_ic = game.compute_utility(x_ic)
+        min_diff, selected_outlier = np.inf, None
+        for outlier in outliers:
+            x_ic_with_outlier = game.compute_incentive_compatible_profile(list(outliers - {outlier}))
+            u_ic_with_outlier = game.compute_incentive_compatible_profile(x_ic_with_outlier)
+            u_diff = u_ic_with_outlier[outlier] - u_ic[outlier]
+            if u_diff < min_diff:
+                min_diff, selected_outlier = u_diff, outlier
+
+        ordering.append(selected_outlier)
+        order_values.append(min_diff)
+
+    return {"test_ordering": np.asarray(ordering), "order_values": np.asarray(order_values)}
+
+
 def compare_taxes(alpha: np.ndarray, phi: float, g: np.ndarray, test_type: str = "greedy") -> Dict[str, np.ndarray]:
     game = LinearQuadraticGame(alpha=alpha, phi=phi, g=g)
     max_tax, max_tax_perm = game.find_optimal_ranking_exhaustive()
@@ -48,6 +69,8 @@ def compare_taxes(alpha: np.ndarray, phi: float, g: np.ndarray, test_type: str =
         test_fields = get_pivotal_ordering(game)
     elif test_type == "random":
         test_fields = get_random_ordering(game)
+    elif test_type == "most_independent":
+        test_fields = get_most_independent_ordering(game)
     else:
         raise ValueError("test_type must be 'greedy' or 'pivotal'")
     seq_tax_by_test_ordering = game.equilibrium_tax(mechanism="sequential", ordering=test_fields["test_ordering"])

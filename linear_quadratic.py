@@ -63,12 +63,15 @@ class LinearQuadraticGame:
         return u_social - u_ic
 
     def find_optimal_ranking_exhaustive(self) -> Tuple[float, Sequence]:
-        max_tax, max_tax_perm = -np.inf, None
+        max_tax, max_tax_perm = -np.inf, []
         positive_perms, negative_perms = [], []
         for perm in itertools.permutations(range(self.num_agents)):
             total_tax = self.equilibrium_tax(mechanism="sequential", ordering=perm).sum()
-            if total_tax > max_tax:
-                max_tax, max_tax_perm = total_tax, perm
+            if total_tax > max_tax + 1e-15:
+                max_tax, max_tax_perm = total_tax, [perm]
+            elif np.isclose(total_tax, max_tax, atol=1e-15):
+                max_tax_perm.append(perm)
+
             if total_tax < 0:
                 negative_perms.append(perm)
             else:
