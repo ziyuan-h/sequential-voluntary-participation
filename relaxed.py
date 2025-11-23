@@ -1,12 +1,16 @@
 import itertools
+import json
+from collections import defaultdict
 
 import numpy as np
-from tqdm import trange
+from tqdm import trange, tqdm
+import networkx as nx
+import matplotlib.pyplot as plt
 
+from birkhoff import bvn_decomposition
 
 def create_adjacency_matrix(N):
     """Creates a random symmetric adjacency matrix (A) with zero diagonal."""
-    np.random.seed(42)
     A = np.random.rand(N, N)
     A = (A + A.T) / 2  # Make it symmetric
     np.fill_diagonal(A, 0)
@@ -83,7 +87,6 @@ def project_to_doubly_stochastic(P, max_iter=100, tol=1e-6):
 def obj_and_grad(P, G, gamma, alpha):
     N = G.shape[0]
     G_perm = P @ G @ P.T  # the permuted G
-    print("G_perm", G_perm)
     H = np.linalg.inv(np.eye(N) - gamma * G_perm)
     P_alpha = P @ alpha
 
@@ -94,7 +97,7 @@ def obj_and_grad(P, G, gamma, alpha):
         # record objective and gradient
         he = H[:,i].copy()
         hp_alpha = H @ P_alpha
-        Ji_sqrt = P_alpha[i]  # the square root of J_i(P)
+        Ji_sqrt = hp_alpha[i]  # the square root of J_i(P)
         JP += Ji_sqrt ** 2
         GP += 2 * Ji_sqrt * (
             2*gamma*G@P.T@(he[:, np.newaxis] * Q * hp_alpha[np.newaxis, :])
@@ -185,7 +188,7 @@ def solve_pgd(G, initial_P, gamma, alpha, beta = 0.9, learning_rate=1e-2, max_it
     P = initial_P.copy()
     J_history = []
 
-    print(f"Starting PGD for N={N}. Initial P is a random doubly stochastic matrix.")
+    # print(f"Starting PGD for N={N}. Initial P is a random doubly stochastic matrix.")
     optimizer = AdamOptimizer(
         N=N,
         learning_rate=learning_rate,
@@ -199,7 +202,8 @@ def solve_pgd(G, initial_P, gamma, alpha, beta = 0.9, learning_rate=1e-2, max_it
         J_history.append(J_P)
 
         # Check for convergence
-        if iter_count > 0 and abs(J_history[-1] - J_history[-2]) < tol:
+        if verbose and iter_count > 0 and abs(J_history[-1] - J_history[-2]) < \
+                tol:
             print(f"Convergence achieved at iteration {iter_count}.")
             break
 
@@ -213,8 +217,8 @@ def solve_pgd(G, initial_P, gamma, alpha, beta = 0.9, learning_rate=1e-2, max_it
             grad_norm = np.linalg.norm(nabla_J_P)
             print(f"Iteration {iter_count:04d} | J(P) = {J_P:.6f} | Gradient Norm: {grad_norm:.6e}")
 
-    print(f"\nOptimization Finished.")
-    print(f"Final J(P): {J_history[-1]:.6f}")
+    # print(f"\nOptimization Finished.")
+    # print(f"Final J(P): {J_history[-1]:.6f}")
 
     return P, J_history
 
@@ -251,7 +255,8 @@ def greedy_welfare_heuristic(N, G, gamma, alpha):
 
             H_greedy = np.linalg.inv(np.eye(N) - gamma * np.multiply(Q_greedy, G))
             u_greedy = H_greedy @ alpha
-            social_welfare = np.sum(u_greedy)
+            # social welfare of the participating agents
+            social_welfare = np.sum(u_greedy[current_ordering])
             if social_welfare > best_increase:
                 best_increase = social_welfare
                 best_agent = agent
@@ -270,10 +275,11 @@ def social_optimum(N, G, gamma, alpha):
     return np.inner(alpha, np.linalg.inv(np.eye(N) - 2*gamma*G) @ alpha)
 
 
-def main(N, G, alpha, gamma, verbose):
+def calculate_approx(N, G, alpha, gamma, verbose):
     repeat_num = 10
     exp_history = []
-    for _ in trange(repeat_num, desc="Runs"):
+    iteritems = trange(repeat_num, desc="Runs") if verbose else range(repeat_num)
+    for _ in iteritems:
         P_initial_random = np.random.rand(N, N)
         P_initial = project_to_doubly_stochastic(P_initial_random)
         LR = 2e-6  # Adjusted learning rate, often needed when the gradient grows in complexity
@@ -294,7 +300,8 @@ def main(N, G, alpha, gamma, verbose):
 
     min_J = min([(P, history[-1]) for P, history in exp_history], key=lambda x: x[1])
     print("Minimum objective value over all runs:", min_J[1])
-    print("Corresponding P matrix:\n", min_J[0])
+    # print("Corresponding P matrix:\n", min_J[0])
+    return min_J[0], min_J[1]
 
 
 def single_eval(N, G, alpha, gamma, P):
@@ -304,28 +311,146 @@ def single_eval(N, G, alpha, gamma, P):
 
 def main_eval(N, G, alpha, gamma):
     permutation_matrices = generate_all_permutation_matrices(N)
-    for idx, P in enumerate(permutation_matrices):
-        print("Permutation Matrix:", P)
+    JP_list = []
+    for idx, P in tqdm(enumerate(permutation_matrices), total=len(permutation_matrices)):
         J_P = single_eval(N, G, alpha, gamma, P)
-        print(f"Permutation Matrix {idx+1}/{len(permutation_matrices)}: J(P) = {J_P:.6f}")
+        JP_list.append(J_P)
+
+    print(f"Percentage of unique J(P) values for permutation matrices: "
+          f"{len(set(JP_list)) / len(JP_list) * 100:.3f}")
+    print("Minimum J(P):", min(JP_list))
+    return min(JP_list)
+    
+
+def individual_experiment(N, G, alpha, gamma, verbose):
+  result = {}
+  social_welfare = social_optimum(N, G, gamma, alpha)  # 246.140471 128.019560
+  # print(f"Social Optimum (2x interaction): {social_welfare:.6f}")
+  result['social_optimum'] = social_welfare.item()
+  
+  # RUN!: Calculate the approximation
+  P, J = calculate_approx(N, G, alpha, gamma, verbose)  # 175.046020 94.140498
+  result['pgd_P'] = P.tolist()
+  result['pgd_J'] = J.item()
+  
+  # RUN4: Compute the pivotal heuristic orderings
+  loo_order = leave_one_out_heuristic(N, G, gamma, alpha)
+  # print("Leave-One-Out Heuristic Ordering:", loo_order.tolist())
+  J_P = single_eval(N, G, alpha, gamma, np.eye(N)[loo_order])  # 246.139347 128.018935
+  # print(f"Leave-One-Out Heuristic: J(P) = {J_P:.6f}")
+  result['loo_order'] = loo_order.tolist()
+  result['loo_J'] = J_P.item()
+  
+  # RUN5: Compute the greedy welfare heuristic orderings
+  greedy_order = greedy_welfare_heuristic(N, G, gamma, alpha)
+  # print("Greedy Welfare Heuristic Ordering:", greedy_order)
+  J_P = single_eval(N, G, alpha, gamma, np.eye(N)[greedy_order])  #
+  # 246.138127 128.018529
+  # print(f"Greedy Welfare Heuristic: J(P) = {J_P:.6f}")
+  result['greedy_order'] = greedy_order
+  result['greedy_J'] = J_P.item()
+  
+  # RUN6: Use Birkhoff package to find optimal permutation
+  lamb_and_P = bvn_decomposition(P)
+  max_coef, max_coef_P = max(lamb_and_P, key=lambda x: x[0])
+  J_P = single_eval(N, G, alpha, gamma, max_coef_P)  # 128.018529
+  # print(f"Max coefficient permutation: J(P) = {J_P:.6f}")
+  result['birkhoff_P'] = max_coef_P.tolist()
+  result['birkhoff_J'] = J_P.item()
+  
+  return result
+
+
+def full_edge_experiment(N, verbose=False):
+    num_edges = [N * i // 2 for i in range(1, N)]
+    experiment_results = {}
+    for edges in tqdm(num_edges, desc="Edge Experiments"):
+        G = nx.gnm_random_graph(N, edges, seed=42)
+        G_adj = nx.to_numpy_array(G)
+        gamma = 0.01  # Interaction strength parameter
+        alpha = np.ones(N) * 5
+        experiment_results[edges] = individual_experiment(N, G_adj, alpha,
+                                                          gamma, verbose)
+      
+    return experiment_results
+
+
+def full_node_experiment(N, verbose=False):
+    num_nodes = [i for i in range(2, N)]
+    experiment_results = {}
+    for nodes in tqdm(num_nodes, desc="Node Experiments"):
+        G = nx.gnm_random_graph(nodes, nodes * (nodes - 1) // 4, seed=42)
+        gamma = 0.01  # Interaction strength parameter
+        alpha = np.ones(nodes) * 5
+        experiment_results[nodes] = individual_experiment(nodes,
+                                                          nx.to_numpy_array(G),
+                                                          alpha, gamma, verbose)
+    return experiment_results
+
+
+def plot_results(results, xlabel=""):
+    values = defaultdict(list)
+    axis = []
+    for edges, result in results.items():
+      values["loo"] += [np.abs((result["loo_J"] - result["pgd_J"]) / \
+                      (result["pgd_J"] - result["social_optimum"]))]
+      values["greedy"] += [np.abs((result["greedy_J"] - result["pgd_J"]) / \
+                         (result["pgd_J"] - result["social_optimum"]))]
+      values["birkhoff"] += [np.abs((result["birkhoff_J"] - result["pgd_J"]) / \
+                           (result["pgd_J"] - result["social_optimum"]))]
+      axis.append(edges)
+      
+    plt.plot(axis, values["loo"], label="Leave-One-Out Heuristic", marker='o')
+    plt.plot(axis, values["greedy"], label="Greedy Welfare Heuristic", marker='s')
+    plt.plot(axis, values["birkhoff"], label="Birkhoff Max Coefficient", marker='^')
+    plt.yscale('log')
+    plt.xlabel(xlabel)
+    plt.ylabel("Relative Error to PGD Solution")
+    plt.title("Heuristic Performance vs. PGD Solution")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
 
 
 # --- 4. Execution ---
 if __name__ == "__main__":
-    np.random.seed(99)  # New seed for alpha
-    N = 20  # Number of agents/nodes
+    np.random.seed(42)  # New seed for alpha
+    N = 15  # Number of agents/nodes
+    verbose = False
+    
+    # # Experiment on the number of edges
+    # results = full_edge_experiment(N, verbose)
+    # json.dump(results, open("relaxed_results.json", "w"), indent=2)
+    # plot_results(results, xlabel="Number of Edges in Graph")
+    # exit()
+    
+    # Experiment on the number of nodes
+    results = full_node_experiment(N, verbose)
+    json.dump(results, open("relaxed_node_results.json", "w"), indent=2)
+    plot_results(results, xlabel="Number of Nodes in Graph")
+    exit()
+    
     G = create_adjacency_matrix(N)
+    # G = np.zeros((N, N))
+    # G[0,:] = 1
+    # G[:,0] = 1
+    # G[0,0] = 0
     print('G adjacency matrix:\n', G)
     gamma = 0.01  # Interaction strength parameter
     alpha = np.random.rand(N) * 10
     print('alpha', alpha)
     verbose = False
+    
+    social_welfare = social_optimum(N, G, gamma, alpha)  # 246.140471 128.019560
+    print(f"Social Optimum (2x interaction): {social_welfare:.6f}")
 
-    # # RUN!: Calculate the approximation
-    # main(N, G, alpha, gamma, verbose)
+    # RUN!: Calculate the approximation
+    P, J = calculate_approx(N, G, alpha, gamma, verbose)  # 175.046020 94.140498
 
-    # RUN2: Evaluate all permutation matrices
-    main_eval(N, G, alpha, gamma)
+    # # RUN2: Evaluate all permutation matrices
+    # main_eval(N, G, alpha, gamma)
+    # # Percentage of unique J(P) values for permutation matrices: 77.500
+    # # Minimum J(P): 128.01839839949682
 
     # # RUN3: Evaluate a particular matrix P
     # test_P = np.asarray([
@@ -341,11 +466,24 @@ if __name__ == "__main__":
     # # RUN4: Compute the pivotal heuristic orderings
     # loo_order = leave_one_out_heuristic(N, G, gamma, alpha)
     # print("Leave-One-Out Heuristic Ordering:", loo_order.tolist())
-    # J_P = single_eval(N, G, alpha, gamma, np.eye(N)[loo_order])  # 127.392063
+    # J_P = single_eval(N, G, alpha, gamma, np.eye(N)[loo_order])  # 246.139347 128.018935
     # print(f"Leave-One-Out Heuristic: J(P) = {J_P:.6f}")
-    #
+
     # # RUN5: Compute the greedy welfare heuristic orderings
     # greedy_order = greedy_welfare_heuristic(N, G, gamma, alpha)
     # print("Greedy Welfare Heuristic Ordering:", greedy_order)
-    # J_P = single_eval(N, G, alpha, gamma, np.eye(N)[greedy_order])
+    # J_P = single_eval(N, G, alpha, gamma, np.eye(N)[greedy_order])  #
+    # # 246.138127 128.018529
     # print(f"Greedy Welfare Heuristic: J(P) = {J_P:.6f}")
+  
+    # # RUN6: Use Birkhoff package to find optimal permutation
+    # lamb_and_P = bvn_decomposition(P)
+    # max_coef, max_coef_P = max(lamb_and_P, key=lambda x: x[0])
+    # J_P = single_eval(N, G, alpha, gamma, max_coef_P)  # 128.018529
+    # print(f"Max coefficient permutation: J(P) = {J_P:.6f}")
+
+    
+    
+
+    
+    
